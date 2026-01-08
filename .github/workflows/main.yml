@@ -1,0 +1,85 @@
+name: win 10 RDP tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-2022
+    timeout-minutes: 350
+
+    steps:
+      - name: Configure Core RDP Settings
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Lsa' -Name "LimitBlankPasswordUse" -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User (Rayat) No Password
+        run: |
+          if (-not (Get-LocalUser -Name "Rayat" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "Rayat" -NoPassword -AccountNeverExpires
+          }
+          Set-LocalUser -Name "Rayat" -PasswordNeverExpires $true
+          $user = [ADSI]"WinNT://localhost/Rayat,user"
+          $user.Put("PasswordExpired", 0)
+          $user.SetInfo()
+          Add-LocalGroupMember -Group "Administrators" -Member "Rayat"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Rayat"
+
+      - name: Create Config File on Desktop
+        run: |
+          $DesktopPath = "C:\Users\Rayat\Desktop"
+          if (-not (Test-Path $DesktopPath)) {
+              New-Item -Path $DesktopPath -ItemType Directory -Force
+          }
+          $ConfigContent = '[{"targets":[{"delayUnit":1,"delayValue":6,"duration":0,"type":0,"xPos":167,"xPos1":-1,"yPos":229,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":611,"xPos1":-1,"yPos":457,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":889,"xPos1":-1,"yPos":332,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":708,"xPos1":-1,"yPos":499,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":806,"xPos1":-1,"yPos":362,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":801,"xPos1":-1,"yPos":383,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":500,"type":1,"xPos":780,"xPos1":743,"yPos":222,"yPos1":158}],"antiDetection":true,"id":0,"name":"fix 960","numberOfCycles":10,"stopConditionChecked":0,"timeValue":300},{"targets":[{"delayUnit":1,"delayValue":6,"duration":0,"type":0,"xPos":202,"xPos1":-1,"yPos":305,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":1194,"xPos1":-1,"yPos":504,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":943,"xPos1":-1,"yPos":682,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":816,"xPos1":-1,"yPos":613,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":1050,"xPos1":-1,"yPos":501,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":1077,"xPos1":-1,"yPos":532,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":500,"type":1,"xPos":1093,"xPos1":1036,"yPos":383,"yPos1":337}],"antiDetection":false,"id":1,"name":"Config 1260","numberOfCycles":10,"stopConditionChecked":0,"timeValue":300}]'
+          Set-Content -Path "$DesktopPath\Config.txt" -Value $ConfigContent
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.92.3-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Establish Tailscale Connection
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          if (-not $tsIP) { exit 1 }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+     
+      - name: Verify RDP Accessibility
+        run: |
+          Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+
+      - name: Install Chocolatey and BlueStacks (Silent)
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy Bypass -Scope Process -Force; 
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          choco install bluestacks -y --silent --no-progress --params "'/Silent /NoRestart'" --timeout 900
+
+      - name: Maintain Connection + Watch RDP User
+        run: |
+          Write-Host "`n=== RDP ACCESS BY RAYAT ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: Rayat"
+          Write-Host "Config file created on Desktop"
+          Write-Host "==========================`n"
+          while ($true) {
+              Start-Sleep -Seconds 300
+          }
+          
