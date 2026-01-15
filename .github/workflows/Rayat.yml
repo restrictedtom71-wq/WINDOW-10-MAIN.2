@@ -1,4 +1,4 @@
-name: win 10 RDP tailscale
+name: prottoy bot0
 
 on:
   workflow_dispatch:
@@ -34,10 +34,19 @@ jobs:
       - name: Create Config File for Rayat
         run: |
           $ConfigText = '[{"targets":[{"delayUnit":1,"delayValue":6,"duration":0,"type":0,"xPos":167,"xPos1":-1,"yPos":229,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":611,"xPos1":-1,"yPos":457,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":889,"xPos1":-1,"yPos":332,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":708,"xPos1":-1,"yPos":499,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":806,"xPos1":-1,"yPos":362,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":801,"xPos1":-1,"yPos":383,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":500,"type":1,"xPos":780,"xPos1":743,"yPos":222,"yPos1":158}],"antiDetection":true,"id":0,"name":"fix 960","numberOfCycles":10,"stopConditionChecked":0,"timeValue":300},{"targets":[{"delayUnit":1,"delayValue":6,"duration":0,"type":0,"xPos":202,"xPos1":-1,"yPos":305,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":1194,"xPos1":-1,"yPos":504,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":943,"xPos1":-1,"yPos":682,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":816,"xPos1":-1,"yPos":613,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":1050,"xPos1":-1,"yPos":501,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":0,"type":0,"xPos":1077,"xPos1":-1,"yPos":532,"yPos1":-1},{"delayUnit":0,"delayValue":300,"duration":500,"type":1,"xPos":1093,"xPos1":1036,"yPos":383,"yPos1":337}],"antiDetection":false,"id":1,"name":"Config 1260","numberOfCycles":10,"stopConditionChecked":0,"timeValue":300}]'
+          
+          # Force create Rayat's Desktop folder if it's not initialized
           $RayatDesktop = "C:\Users\Rayat\Desktop"
           if (-not (Test-Path $RayatDesktop)) { New-Item -Path $RayatDesktop -ItemType Directory -Force }
+          
+          # Write file to Rayat's Desktop
           Set-Content -Path "$RayatDesktop\Config.txt" -Value $ConfigText -Force
+          
+          # Backup: Write to Public Desktop as well
           Set-Content -Path "C:\Users\Public\Desktop\Config.txt" -Value $ConfigText -Force
+          
+          # Give Rayat full ownership/permission of the file
+          icacls "$RayatDesktop\Config.txt" /grant Rayat:F
 
       - name: Install Tailscale
         run: |
@@ -45,39 +54,38 @@ jobs:
           $installerPath = "$env:TEMP\tailscale.msi"
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Establish Tailscale Connection
+        run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          if (-not $tsIP) { exit 1 }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+     
+      - name: Verify RDP Accessibility
+        run: |
+          Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
 
-      - name: Install BlueStacks & Tools
+      - name: Install Chocolatey and BlueStacks (Silent)
         shell: powershell
         run: |
-          Set-ExecutionPolicy Bypass -Scope Process -Force
-          # Install Chocolatey
+          Set-ExecutionPolicy Bypass -Scope Process -Force; 
           iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          # Install BlueStacks & ADB (Android Debug Bridge)
-          choco install bluestacks adb -y --silent
+          choco install bluestacks -y --silent --no-progress --params "'/Silent /NoRestart'" --timeout 900
 
-      - name: Setup Free Fire & AutoClicker (Background Task)
-        shell: powershell
+      - name: Maintain Connection + Watch RDP User
         run: |
-          Write-Host "Starting BlueStacks in background..."
-          # Note: BlueStacks starting might take 1-2 minutes
-          Start-Process "C:\Program Files\BlueStacks_nxt\HD-Player.exe"
-          
-          # Downloading APKs (Links are examples, replace with direct links if needed)
-          Write-Host "Downloading Apps..."
-          Invoke-WebRequest -Uri "https://github.com/shuvro-rayat/apks/raw/main/autoclicker.apk" -OutFile "$env:TEMP\autoclicker.apk" -ErrorAction SilentlyContinue
-          
-          Write-Host "Wait for Emulator to boot then use ADB to install..."
-          # In RDP, you will see the BlueStacks window. 
-          # You can manually drag the Config.txt into the window to import it.
-
-      - name: Maintain Connection
-        run: |
-          Write-Host "RDP IP: $env:TAILSCALE_IP"
-          Write-Host "1. Login via RDP"
-          Write-Host "2. BlueStacks will be open"
-          Write-Host "3. Open 'Config.txt' from Desktop and Import to AutoClicker"
+          Write-Host "`n=== RDP READY FOR RAYAT ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Config file is on Rayat's Desktop"
+          Write-Host "==========================`n"
           while ($true) { Start-Sleep -Seconds 300 }
+
           
